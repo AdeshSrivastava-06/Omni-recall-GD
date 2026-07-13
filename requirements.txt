@@ -1,0 +1,8 @@
+mss
+pytesseract
+imagehash
+numpy
+streamlit
+ollama
+pillow
+pygetwindow
