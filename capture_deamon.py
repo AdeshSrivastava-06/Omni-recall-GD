@@ -1,7 +1,7 @@
 import time
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 import numpy as np
 import mss
 import pytesseract
@@ -10,18 +10,17 @@ import imagehash
 import ollama
 import pygetwindow as gw
 
-from db import init_db, save_capture
+from db import init_db, save_capture, get_blocked_apps, get_captures_older_than, archive_capture
 
 # ---- CONFIG ----
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 SCREENSHOT_DIR = "screenshots"
 CAPTURE_INTERVAL_SECONDS = 10
-MIN_TEXT_LENGTH = 15          # skip captures with barely any text
-HASH_DIFF_THRESHOLD = 5       # lower = more sensitive to screen changes
+MIN_TEXT_LENGTH = 20
+HASH_DIFF_THRESHOLD = 5
 EMBED_MODEL = "nomic-embed-text"
-
-# Privacy: any window whose title contains these substrings will NEVER be captured
-BLOCKED_APPS = ["1Password", "Bitwarden", "Banking", "Incognito", "Netbanking", "Password"]
+ARCHIVE_AFTER_HOURS = 2          # screenshots older than this get archived to JSON + PNG deleted
+CLEANUP_EVERY_N_CYCLES = 30      # run the cleanup check roughly every ~5 minutes (30 x 10s)
 
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
@@ -48,53 +47,73 @@ def get_active_app_name() -> str:
 
 
 def is_blocked(app_name: str) -> bool:
-    return any(blocked.lower() in app_name.lower() for blocked in BLOCKED_APPS)
+    blocked_list = get_blocked_apps()
+    return any(blocked.lower() in app_name.lower() for blocked in blocked_list)
+
+
+def run_storage_cleanup():
+    """Archive screenshots older than ARCHIVE_AFTER_HOURS: delete PNG, store JSON text record."""
+    cutoff = (datetime.now() - timedelta(hours=ARCHIVE_AFTER_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
+    old_captures = get_captures_older_than(cutoff)
+
+    if not old_captures:
+        return
+
+    archived_count = 0
+    for capture_id, timestamp, app_name, text, screenshot_path in old_captures:
+        try:
+            if screenshot_path and os.path.exists(screenshot_path):
+                os.remove(screenshot_path)
+            archive_capture(capture_id, timestamp, app_name, text)
+            archived_count += 1
+        except Exception as e:
+            print(f"Error archiving capture {capture_id}: {e}")
+
+    if archived_count:
+        print(f"Storage cleanup: archived {archived_count} screenshot(s) older than {ARCHIVE_AFTER_HOURS}h to JSON.")
 
 
 def run_capture_loop():
     init_db()
     last_hash = None
+    cycle_count = 0
     print("OmniRecall capture daemon started. Press Ctrl+C to stop.")
-    print(f"Privacy blocklist active for: {BLOCKED_APPS}")
 
     with mss.mss() as sct:
-        monitor = sct.monitors[1]  # primary monitor
+        monitor = sct.monitors[1]
 
         while True:
             try:
+                cycle_count += 1
+
                 app_name = get_active_app_name()
 
                 if is_blocked(app_name):
                     print(f"Skipped capture — blocked app detected ({app_name})")
-                    time.sleep(CAPTURE_INTERVAL_SECONDS)
-                    continue
+                else:
+                    sct_img = sct.grab(monitor)
+                    img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
 
-                sct_img = sct.grab(monitor)
-                img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+                    current_hash = imagehash.average_hash(img)
 
-                current_hash = imagehash.average_hash(img)
+                    if last_hash is None or (current_hash - last_hash) >= HASH_DIFF_THRESHOLD:
+                        last_hash = current_hash
 
-                if last_hash is not None and (current_hash - last_hash) < HASH_DIFF_THRESHOLD:
-                    time.sleep(CAPTURE_INTERVAL_SECONDS)
-                    continue
+                        text = pytesseract.image_to_string(img).strip()
+                        text = clean_ocr_text(text)
 
-                last_hash = current_hash
+                        if len(text) >= MIN_TEXT_LENGTH:
+                            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            filename = os.path.join(SCREENSHOT_DIR, f"{timestamp.replace(':', '-')}.png")
+                            img.save(filename)
 
-                text = pytesseract.image_to_string(img).strip()
-                text = clean_ocr_text(text)
+                            embedding = get_embedding(text)
+                            save_capture(timestamp, app_name, text, filename, embedding)
 
-                if len(text) < MIN_TEXT_LENGTH:
-                    time.sleep(CAPTURE_INTERVAL_SECONDS)
-                    continue
+                            print(f"[{timestamp}] ({app_name}) Captured and indexed ({len(text)} chars)")
 
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                filename = os.path.join(SCREENSHOT_DIR, f"{timestamp.replace(':', '-')}.png")
-                img.save(filename)
-
-                embedding = get_embedding(text)
-                save_capture(timestamp, app_name, text, filename, embedding)
-
-                print(f"[{timestamp}] ({app_name}) Captured and indexed ({len(text)} chars)")
+                if cycle_count % CLEANUP_EVERY_N_CYCLES == 0:
+                    run_storage_cleanup()
 
             except Exception as e:
                 print(f"Error during capture: {e}")
