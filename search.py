@@ -1,6 +1,5 @@
 import numpy as np
 import ollama
-import re
 from datetime import datetime, timedelta
 
 from db import get_all_captures, get_captures_in_range
@@ -19,8 +18,6 @@ def cosine_similarity(a, b):
 
 
 def detect_time_range(query: str):
-    """Very simple keyword-based time filter. Returns (start, end) as
-    'YYYY-MM-DD HH:MM:SS' strings, or None if no time keyword found."""
     query_lower = query.lower()
     now = datetime.now()
 
@@ -100,3 +97,33 @@ Question: {query}
     )
 
     return response["message"]["content"], top_matches
+
+
+def generate_daily_summary():
+    now = datetime.now()
+    start_of_day = now.replace(hour=0, minute=0, second=0).strftime("%Y-%m-%d %H:%M:%S")
+    end_of_day = now.strftime("%Y-%m-%d %H:%M:%S")
+
+    captures = get_captures_in_range(start_of_day, end_of_day)
+
+    if not captures:
+        return "No captures recorded yet today."
+
+    # Cap total text sent to the model so it stays fast
+    combined_text = "\n\n".join([f"[{c['timestamp']}] ({c['app_name']}): {c['text'][:300]}" for c in captures])
+    combined_text = combined_text[:6000]
+
+    prompt = f"""Based on the captured screen activity below, write a short, friendly summary
+of what this person did today. Group similar activities together. Keep it to 4-6 bullet points.
+
+Captured activity:
+{combined_text}
+"""
+
+    response = ollama.chat(
+        model=LLM_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        options={"num_predict": 300}
+    )
+
+    return response["message"]["content"]
