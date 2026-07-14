@@ -22,10 +22,88 @@ OmniRecall continuously captures screenshots, performs local OCR, indexes the ex
 ## Tech Stack
 
 - Python
-- FastAPI
-- React
-- Tauri
+- Streamlit
 - LangChain
 - ChromaDB
 - Ollama
 - Tesseract OCR
+
+---
+
+# Installation
+
+## 1. Clone the Repository
+
+```bash
+git clone https://github.com/AdeshSrivastava-06/Omni-recall-GD.git
+cd Omni-recall-GD
+```
+
+## 2. Create a Virtual Environment (Recommended)
+
+### Windows
+
+```bash
+python -m venv venv
+venv\Scripts\activate
+```
+
+### Linux / macOS
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+## 3. Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+## 4. Install Ollama
+
+Download and install Ollama from:
+
+https://ollama.com/download
+
+After installation, pull the required model:
+
+```bash
+ollama pull llama3.2:3b
+ollama pull nomic-embed-text
+```
+
+> Make sure the Ollama server is running before starting the application.
+
+## 5. Install Tesseract OCR
+
+Download and install Tesseract OCR.
+
+During installation, ensure it is added to your system PATH.
+
+---
+
+# Running the Project
+
+## Step 1: Start the Screenshot Capture Backend
+
+```bash
+python capture_deamon.py
+```
+
+This continuously captures screenshots, performs OCR, and stores searchable embeddings locally.
+
+---
+
+## Step 2: Start the Streamlit Application
+
+Open a new terminal and run:
+
+```bash
+streamlit run App.py
+```
+
+This launches the user interface where you can search your screen history using natural language.
+
+
